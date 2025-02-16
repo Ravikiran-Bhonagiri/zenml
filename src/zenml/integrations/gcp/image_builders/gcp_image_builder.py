@@ -94,6 +94,7 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
             custom_validation_function=_validate_remote_components,
         )
 
+    
     def build(
         self,
         image_name: str,
@@ -101,7 +102,7 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
         docker_build_options: Dict[str, Any],
         container_registry: Optional["BaseContainerRegistry"] = None,
     ) -> str:
-        """Builds and pushes a Docker image.
+        """Builds and pushes a Docker image using Google Cloud Build.
 
         Args:
             image_name: Name of the image to build and push.
@@ -113,77 +114,114 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
             The Docker image name with digest.
 
         Raises:
-            RuntimeError: If no container registry is passed.
-            RuntimeError: If the Cloud Build build fails.
+            ValueError: If no container registry is passed.
+            RuntimeError: If the Cloud Build job fails.
         """
+
         if not container_registry:
-            raise RuntimeError(
-                "The GCP Image Builder requires a container registry to push "
-                "the image to. Please provide one and try again."
+            raise ValueError(
+                "A container registry is required to push the image. "
+                "Please provide one and try again."
             )
 
-        logger.info("Using Cloud Build to build image `%s`", image_name)
-        cloud_build_context = self._upload_build_context(
-            build_context=build_context,
-            parent_path_directory_name="cloud-build-contexts",
-        )
-        build = self._configure_cloud_build(
-            image_name=image_name,
-            cloud_build_context=cloud_build_context,
-            build_options=docker_build_options,
-        )
-        image_digest = self._run_cloud_build(build=build)
-        image_name_without_tag, _ = image_name.rsplit(":", 1)
-        image_name_with_digest = f"{image_name_without_tag}@{image_digest}"
-        return image_name_with_digest
+        logger.info(f"Starting build for image '{image_name}'...")
+        logger.debug(f"Build context: {build_context}")
+        logger.debug(f"Docker build options: {docker_build_options}")
 
+        try:
+            logger.info("Uploading build context...")
+            cloud_build_context_uri = self._upload_build_context(
+                build_context=build_context,
+                parent_path_directory_name="cloud-build-contexts",
+            )
+            logger.info("Build context uploaded.")  # Indicate upload success
+
+            build = self._configure_cloud_build(
+                image_name=image_name,
+                cloud_build_context=cloud_build_context_uri,
+                build_options=docker_build_options,
+            )
+
+            logger.info("Running Cloud Build job...")  # Indicate job start
+            image_digest = self._run_cloud_build(build=build)
+
+            image_name_without_tag, _ = image_name.rsplit(":", 1)
+            image_name_with_digest = f"{image_name_without_tag}@{image_digest}"
+            logger.info(f"Successfully built and pushed image '{image_name_with_digest}'.")
+            return image_name_with_digest
+
+        except ValueError as e:  # Catch ValueErrors from argument validation
+            logger.error(f"Invalid arguments: {e}")
+            raise  # Re-raise the exception
+
+        except Exception as e:  # Catch other exceptions during the build process
+            logger.exception(f"An error occurred during image build:")  # Log with traceback
+            raise  # Re-raise the exception
+
+    
     def _configure_cloud_build(
         self,
         image_name: str,
         cloud_build_context: str,
         build_options: Dict[str, Any],
     ) -> cloudbuild_v1.Build:
-        """Configures the build to be run to generate the Docker image.
+        """Configures the Cloud Build job.
 
         Args:
             image_name: The name of the image to build.
-            cloud_build_context: The path to the build context.
+            cloud_build_context: The GCS URI of the build context.
             build_options: Docker build options.
 
         Returns:
-            The build to run.
+            The configured cloudbuild_v1.Build object.
+
+        Raises:
+            ValueError: If there are issues with build context URI.
+            TypeError: if build options are not in the correct format
         """
-        url_parts = urlparse(cloud_build_context)
-        bucket = url_parts.netloc
-        object_path = url_parts.path.lstrip("/")
-        logger.info(
-            "Build context located in bucket `%s` and object path `%s`",
-            bucket,
-            object_path,
-        )
+        try:
+            url_parts = urlparse(cloud_build_context)
+            bucket = url_parts.netloc
+            object_path = url_parts.path.lstrip("/")
+
+            if not bucket or not object_path:  # Check for valid GCS URI
+                raise ValueError(f"Invalid build context URI: {cloud_build_context}")
+
+            logger.info(
+                f"Build context located in GCS bucket '{bucket}' and object path '{object_path}'."
+            )
+        except ValueError as e:
+            logger.error(f"Error parsing build context URI: {e}")
+            raise  # Re-raise the ValueError
 
         cloud_builder_image = self.config.cloud_builder_image
-        cloud_builder_network_option = f"--network={self.config.network}"
+        cloud_builder_network_option = f"--network={self.config.network}" if self.config.network else ""
         logger.info(
-            "Using Cloud Builder image `%s` to run the steps in the build. "
-            "Container will be attached to network using option `%s`.",
-            cloud_builder_image,
-            cloud_builder_network_option,
+            f"Using Cloud Builder image '{cloud_builder_image}'. Network option: '{cloud_builder_network_option or 'None'}'."
         )
 
-        # Convert the docker_build_options dictionary to a list of strings
         docker_build_args = []
-        for key, value in build_options.items():
-            option = f"--{key}"
-            if isinstance(value, list):
-                for val in value:
-                    docker_build_args.extend([option, val])
-            elif value is not None and not isinstance(value, bool):
-                docker_build_args.extend([option, value])
-            elif value is not False:
-                docker_build_args.extend([option])
+        try:
+            for key, value in build_options.items():
+                option = f"--{key}"
+                if isinstance(value, list):
+                    for val in value:
+                        docker_build_args.extend([option, str(val)])
+                elif value is not None and not isinstance(value, bool):
+                    docker_build_args.extend([option, str(value)])
+                elif value is not False:
+                    docker_build_args.append(option)
+        except TypeError as e:
+            logger.error(f"Invalid docker build options format: {e}")
+            raise  # Re-raise the TypeError
+        except Exception as e: # Catch any other exception during build args creation
+            logger.exception("An unexpected error occurred while processing build options:")
+            raise
 
-        return cloudbuild_v1.Build(
+
+        logger.debug(f"Docker build args: {docker_build_args}")
+
+        build = cloudbuild_v1.Build(
             source=cloudbuild_v1.Source(
                 storage_source=cloudbuild_v1.StorageSource(
                     bucket=bucket, object=object_path
@@ -201,15 +239,17 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
                         *docker_build_args,
                     ],
                 },
-                {
-                    "name": cloud_builder_image,
-                    "args": ["push", image_name],
-                },
+                {"name": cloud_builder_image, "args": ["push", image_name]},
             ],
             images=[image_name],
             timeout=f"{self.config.build_timeout}s",
         )
 
+        logger.debug(f"Configured Cloud Build: {build}")
+
+        return build
+    
+    
     def _run_cloud_build(self, build: cloudbuild_v1.Build) -> str:
         """Executes the Cloud Build run to build the Docker image.
 
@@ -222,26 +262,32 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
         Raises:
             RuntimeError: If the Cloud Build run has failed.
         """
+
         credentials, project_id = self._get_authentication()
         client = cloudbuild_v1.CloudBuildClient(credentials=credentials)
 
         operation = client.create_build(project_id=project_id, build=build)
+        build_id = operation.name.split("/")[-1] # Extract build ID
         log_url = operation.metadata.build.log_url
-        logger.info(
-            "Running Cloud Build to build the Docker image. Cloud Build logs: `%s`",
-            log_url,
-        )
+        logger.info(f"Started Cloud Build job (ID: {build_id}). Logs: {log_url}")
 
-        result = operation.result(timeout=self.config.build_timeout)
+        try:
+            result = operation.result(timeout=self.config.build_timeout)
+        except TimeoutError:
+            logger.error(f"Cloud Build job (ID: {build_id}) timed out after {self.config.build_timeout} seconds. Check logs: {log_url}")
+            raise  # Re-raise TimeoutError
+        except Exception as e:  # Catch other exceptions during the build process
+            logger.exception(f"An unexpected error occurred during the Cloud Build operation (ID: {build_id}):") # Log with traceback
+            raise
 
         if result.status != cloudbuild_v1.Build.Status.SUCCESS:
+            logger.error(f"Cloud Build job (ID: {build_id}) failed. Status: {result.status}. Check logs: {log_url}")
             raise RuntimeError(
-                f"The Cloud Build run to build the Docker image has failed. More "
-                f"information can be found in the Cloud Build logs: {log_url}."
+                f"The Cloud Build run (ID: {build_id}) to build the Docker image has failed. Status: {result.status}. Check logs: {log_url}."
             )
 
         logger.info(
-            f"The Docker image has been built successfully. More information can "
+            f"The Docker image has been built successfully (ID: {build_id}) . More information can "
             f"be found in the Cloud Build logs: `{log_url}`."
         )
 
