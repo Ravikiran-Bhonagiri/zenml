@@ -67,8 +67,9 @@ class LocalImageBuilder(BaseImageBuilder):
         """
         try:
             if not shutil.which("docker"):
-                raise RuntimeError("`docker` is required to run the local image builder.")
-            logger.debug("`docker` executable found.")
+                raise RuntimeError("'docker' is required to run the local image builder.")
+            
+            logger.info("'docker' executable found.")
 
             if not docker_utils.check_docker():
                 error_message = (
@@ -89,16 +90,17 @@ class LocalImageBuilder(BaseImageBuilder):
                     "the `DOCKER ENDPOINT` value of that context and set the "
                     "`DOCKER_HOST` environment variable to that value."
                 )
-                raise RuntimeError(error_message)
-            logger.debug("Successfully connected to the Docker daemon.")
+                logger.error(error_message)  # Log the error message
+                raise RuntimeError("Failed to connect to the Docker daemon.")
+            logger.info("Successfully connected to the Docker daemon.")
 
         except RuntimeError as e:
             logger.error(f"Prerequisite check failed: {e}")
             raise  # Re-raise after logging
-        except Exception as e: # Catch any other exception during prerequisite check
-            logger.exception("An unexpected error occurred during prerequisite check:")
+        except Exception as e:  # Catch any other exception during prerequisite check
+            logger.exception(f"An unexpected error occurred during prerequisite check: {e}")
             raise
-        logger.debug("All prerequisites check passed.")
+        logger.info("All prerequisites check passed.")
 
         
 
@@ -130,21 +132,25 @@ class LocalImageBuilder(BaseImageBuilder):
             # authenticated to access additional registries
             docker_client = container_registry.docker_client
         else:
-            docker_client = docker_utils._try_get_docker_client_from_env()
+            try:
+                docker_client = docker_utils._try_get_docker_client_from_env()
+            except Exception as e:
+                logger.exception("Failed to initialize Docker client: %s", e)
+                raise RuntimeError("Failed to initialize Docker client.") from e
 
         logger.info(f"Starting build of image '{image_name}'...")
         logger.debug(f"Docker build options: {docker_build_options}")
 
         try:
-            with tempfile.TemporaryFile(mode="w+b") as f:
-                logger.debug("Creating temporary file for build context...")
+            with tempfile.NamedTemporaryFile(mode="w+b") as f:
+                logger.debug(f"Creating temporary file for build context: {f.name}")
                 try:
                     build_context.write_archive(f)
                     f.seek(0)  # Rewind is crucial!
                     logger.debug("Build context archive written to temporary file.")
                 except Exception as e:
                     logger.exception("Error writing build context to temporary file: %s", e)
-                    raise RuntimeError("Error writing build context archive.") from e
+                    raise RuntimeError(f"Error writing build context archive for image '{image_name}'.") from e
 
                 try:
                     logger.info("Building image...")
@@ -160,7 +166,7 @@ class LocalImageBuilder(BaseImageBuilder):
 
                 except Exception as e:
                     logger.exception("Error during Docker image build:")
-                    raise RuntimeError("Error during Docker image build.") from e
+                    raise RuntimeError(f"Error during Docker image build for image '{image_name}'.") from e
 
             if container_registry:
                 try:
@@ -170,9 +176,9 @@ class LocalImageBuilder(BaseImageBuilder):
                     return repo_digest
                 except Exception as e:
                     logger.exception(f"Error pushing image '{image_name}' to {container_registry.name}: {e}")
-                    raise RuntimeError(f"Error pushing image.") from e
+                    raise RuntimeError(f"Error pushing image '{image_name}' to {container_registry.name}.") from e
             else:
-                return image_name  # Return the digest if no registry
+                return image_digest  # Return the digest if no registry
 
         except Exception as e:  # Catch any other top-level exceptions
             logger.exception(f"An unexpected error occurred during the build/push process: {e}")

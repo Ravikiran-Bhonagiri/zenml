@@ -136,18 +136,20 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
             )
             logger.info("Build context uploaded.")  # Indicate upload success
 
+            logger.info("Configuring Cloud Build job...")
             build = self._configure_cloud_build(
                 image_name=image_name,
                 cloud_build_context=cloud_build_context_uri,
                 build_options=docker_build_options,
             )
-
+            logger.info("Cloud Build job configured.") 
             logger.info("Running Cloud Build job...")  # Indicate job start
             image_digest = self._run_cloud_build(build=build)
 
             image_name_without_tag, _ = image_name.rsplit(":", 1)
             image_name_with_digest = f"{image_name_without_tag}@{image_digest}"
-            logger.info(f"Successfully built and pushed image '{image_name_with_digest}'.")
+            logger.debug(f"Successfully built and pushed image '{image_name_with_digest}'.")
+            logger.info(f"Successfully built and pushed image")
             return image_name_with_digest
 
         except ValueError as e:  # Catch ValueErrors from argument validation
@@ -165,6 +167,7 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
         cloud_build_context: str,
         build_options: Dict[str, Any],
     ) -> cloudbuild_v1.Build:
+        
         """Configures the Cloud Build job.
 
         Args:
@@ -179,6 +182,8 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
             ValueError: If there are issues with build context URI.
             TypeError: if build options are not in the correct format
         """
+        
+        logger.info("Configuring Cloud Build job...")
         try:
             url_parts = urlparse(cloud_build_context)
             bucket = url_parts.netloc
@@ -187,7 +192,7 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
             if not bucket or not object_path:  # Check for valid GCS URI
                 raise ValueError(f"Invalid build context URI: {cloud_build_context}")
 
-            logger.info(
+            logger.debug(
                 f"Build context located in GCS bucket '{bucket}' and object path '{object_path}'."
             )
         except ValueError as e:
@@ -196,7 +201,7 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
 
         cloud_builder_image = self.config.cloud_builder_image
         cloud_builder_network_option = f"--network={self.config.network}" if self.config.network else ""
-        logger.info(
+        logger.debug(
             f"Using Cloud Builder image '{cloud_builder_image}'. Network option: '{cloud_builder_network_option or 'None'}'."
         )
 
@@ -246,6 +251,7 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
         )
 
         logger.debug(f"Configured Cloud Build: {build}")
+        logger.info("Cloud Build job configured.")
 
         return build
     
@@ -269,7 +275,8 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
         operation = client.create_build(project_id=project_id, build=build)
         build_id = operation.name.split("/")[-1] # Extract build ID
         log_url = operation.metadata.build.log_url
-        logger.info(f"Started Cloud Build job (ID: {build_id}). Logs: {log_url}")
+        logger.info(f"Started Cloud Build job")
+        logger.debug(f"Started Cloud Build job (ID: {build_id}). Logs: {log_url}")
 
         try:
             result = operation.result(timeout=self.config.build_timeout)
@@ -292,4 +299,7 @@ class GCPImageBuilder(BaseImageBuilder, GoogleCredentialsMixin):
         )
 
         image_digest: str = result.results.images[0].digest
+
+        logger.info("Cloud Build job completed successfully")
+
         return image_digest

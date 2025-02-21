@@ -105,6 +105,7 @@ class AWSImageBuilder(BaseImageBuilder):
         Raises:
             RuntimeError: If the AWS Code Build client cannot be created.
         """
+        logger.info("Getting AWS CodeBuild client...")
         if (
             self._code_build_client is not None
             and self.connector_has_expired()
@@ -130,6 +131,7 @@ class AWSImageBuilder(BaseImageBuilder):
             boto_session = boto3.Session()
 
         self._code_build_client = boto_session.client("codebuild")
+        logger.info("AWS CodeBuild client created.")
         return self._code_build_client
 
 
@@ -155,7 +157,7 @@ class AWSImageBuilder(BaseImageBuilder):
             RuntimeError: If no container registry is passed.
             RuntimeError: If the AWS CodeBuild build fails.
         """
-        logger.info(f"Starting AWS CodeBuild for image: {image_name}")
+        logger.info(f"Starting AWS CodeBuild")
         logger.debug(f"Build context: {build_context}")
         logger.debug(f"Docker build options: {docker_build_options}")
 
