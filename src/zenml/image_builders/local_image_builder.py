@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+logger.propagate = True  # Ensure logs propagate to the root logger
 
 class LocalImageBuilderConfig(BaseImageBuilderConfig):
     """Local image builder configuration."""
