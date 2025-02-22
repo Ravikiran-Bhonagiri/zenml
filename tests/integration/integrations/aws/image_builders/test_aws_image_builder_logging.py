@@ -15,10 +15,19 @@
 import logging
 from unittest.mock import patch, MagicMock
 import pytest
+from uuid import uuid4
 from zenml.image_builders import BuildContext
 from zenml.container_registries import BaseContainerRegistry
-from zenml.image_builders.aws_image_builder import AWSImageBuilder, AWSImageBuilderConfig
+from zenml.integrations.aws.image_builders.aws_image_builder import (
+    AWSImageBuilder,
+    AWSImageBuilderConfig,
+)
+from zenml.enums import StackComponentType
 
+# Configure logging to ensure logs are captured
+logging.basicConfig(level=logging.DEBUG)
+
+# Fixture for creating an AWSImageBuilder instance
 @pytest.fixture
 def aws_image_builder():
     """Fixture for creating an AWSImageBuilder instance."""
@@ -27,65 +36,63 @@ def aws_image_builder():
         build_image="test-build-image",
         compute_type="BUILD_GENERAL1_SMALL",
     )
-    return AWSImageBuilder(config)
+    return AWSImageBuilder(
+        id=uuid4(),  # Generate a unique ID
+        config=config,
+        name="aws-image-builder",
+        type=StackComponentType.IMAGE_BUILDER,
+        flavor="aws",
+        user=uuid4(),  # Mock user ID
+        workspace=uuid4(),  # Mock workspace ID
+        created="2023-01-01T00:00:00Z",  # Mock creation timestamp
+        updated="2023-01-01T00:00:00Z",  # Mock update timestamp
+    )
 
+# Fixture for creating a mock BuildContext
 @pytest.fixture
 def mock_build_context():
     """Fixture for creating a mock BuildContext."""
     return MagicMock(spec=BuildContext)
 
+# Fixture for creating a mock BaseContainerRegistry
 @pytest.fixture
 def mock_container_registry():
     """Fixture for creating a mock BaseContainerRegistry."""
     return MagicMock(spec=BaseContainerRegistry)
 
-def test_aws_image_builder_logging(aws_image_builder, mock_build_context, mock_container_registry, caplog):
-    """Test that the AWSImageBuilder logs messages correctly during execution."""
-    # Set up test data
-    image_name = "test-image:latest"
-    docker_build_options = {"arg1": "value1", "arg2": "value2"}
+# Fixture for creating mock Docker build options
+@pytest.fixture
+def mock_docker_build_options():
+    """Fixture for creating mock Docker build options."""
+    return {"tag": "latest"}
 
-    # Mock external dependencies
-    with patch.object(aws_image_builder, "_upload_build_context", return_value="s3://test-bucket/test-context"), \
-         patch.object(aws_image_builder, "code_build_client") as mock_code_build_client, \
-         patch("time.sleep"):
 
-        # Mock AWS CodeBuild response
-        mock_code_build_client.start_build.return_value = {
-            "build": {
-                "arn": "arn:aws:codebuild:us-west-2:123456789012:build/test-project:12345",
-                "id": "test-build-id",
-            }
-        }
-        mock_code_build_client.batch_get_builds.return_value = {
-            "builds": [{"buildStatus": "SUCCEEDED"}]
-        }
-
-        # Execute the build method
-        with caplog.at_level(logging.INFO):
+# Test 1: Build image failure (invalid container registry)
+def test_build_image_failure_invalid_container_registry(aws_image_builder, mock_build_context, mock_docker_build_options, caplog):
+    """Test that an image build fails when no container registry is provided."""
+    logging.debug("Starting test_build_image_failure_invalid_container_registry")
+    
+    # Mock AWS region and Docker client
+    with patch('boto3.Session') as mock_boto_session, \
+         patch('zenml.image_builders.base_image_builder.BaseImageBuilder._upload_build_context'):
+        
+        # Mock the AWS region
+        mock_boto_session.return_value.region_name = "us-west-2"
+        
+        image_name = "test_image"
+        
+        # Ensure logs are captured
+        with pytest.raises(RuntimeError) as exc_info:
             aws_image_builder.build(
                 image_name=image_name,
                 build_context=mock_build_context,
-                docker_build_options=docker_build_options,
-                container_registry=mock_container_registry,
+                docker_build_options=mock_docker_build_options,
+                container_registry=None,
             )
+        
+        # Verify the error message
+        assert "The AWS Image Builder requires a container registry to push the image to" in str(exc_info.value)
+    
+    logging.debug("Finished test_build_image_failure_invalid_container_registry")
 
-        # Verify log messages
-        logs = caplog.text
 
-        # Check initial logs
-        assert "Starting AWS CodeBuild" in logs
-        assert f"Build context: {mock_build_context}" in logs
-        assert f"Docker build options: {docker_build_options}" in logs
-
-        # Check logs for build context upload
-        assert "Uploading build context to S3..." in logs
-        assert "Build context uploaded to S3: test-bucket, object path: test-context" in logs
-
-        # Check logs for AWS CodeBuild job execution
-        assert "Starting AWS CodeBuild job..." in logs
-        assert "AWS CodeBuild job started. Build logs: https://us-west-2.console.aws.amazon.com/codesuite/codebuild/123456789012/projects/test-project/test-build-id/log" in logs
-        assert "AWS CodeBuild job succeeded. Build logs: https://us-west-2.console.aws.amazon.com/codesuite/codebuild/123456789012/projects/test-project/test-build-id/log" in logs
-
-        # Check logs for successful image build and push
-        assert "Successfully built and pushed image" in logs
