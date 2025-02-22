@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from zenml.stack import Stack
 
 logger = get_logger(__name__)
-
+logger.propagate = True  # Ensure logs propagate to the root logger
 
 class AWSImageBuilder(BaseImageBuilder):
     """AWS Code Build image builder implementation."""
