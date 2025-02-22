@@ -37,6 +37,7 @@ else:
 
 
 logger = get_logger(__name__)
+logger.propagate = True  # Ensure logs propagate to the root logger
 
 
 class KanikoImageBuilder(BaseImageBuilder):
